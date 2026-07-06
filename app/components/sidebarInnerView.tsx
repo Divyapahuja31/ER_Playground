@@ -7,10 +7,6 @@ const SideInnerView = ({ name }: { name: string }) => {
   const nodes = useNodes();
   const { addNodes } = useReactFlow();
 
-  useEffect(()=>{
-    console.log(nodes)
-  },[])
-
   const handleOnClick = () => {
     const id = `${Date.now()}`;
     const newNode = {
@@ -42,4 +38,4 @@ const SideInnerView = ({ name }: { name: string }) => {
 
 }
 
-export default SideInnerView 
+export default SideInnerView
