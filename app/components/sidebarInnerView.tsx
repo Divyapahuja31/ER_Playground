@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useNodes,useReactFlow } from '@xyflow/react'
 
 import SideBarNode from "./sidebarNode"
+import { resolveCollisions } from '../utils/conllision';
 
 const SideInnerView = ({ name }: { name: string }) => {
   const nodes = useNodes();
@@ -15,6 +16,7 @@ const SideInnerView = ({ name }: { name: string }) => {
       data: { label: `Node ${id.slice(-4)}` },
       position: { x:0, y: 0 },
     };
+    resolveCollisions(newNode, nodes);
     addNodes(newNode);
   }
 
