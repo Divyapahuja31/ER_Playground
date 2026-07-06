@@ -4,12 +4,11 @@ import { useNodes,useReactFlow } from '@xyflow/react'
 import SideBarNode from "./sidebarNode"
 
 const SideInnerView = ({ name }: { name: string }) => {
-  const data = useNodes();
+  const nodes = useNodes();
   const { addNodes } = useReactFlow();
-  const [nodes, setNodes] = useState(data)
 
   useEffect(()=>{
-    console.log(data)
+    console.log(nodes)
   },[])
 
   const handleOnClick = () => {
@@ -36,7 +35,7 @@ const SideInnerView = ({ name }: { name: string }) => {
         </button>
       </div>
       <div>
-        {nodes && nodes.length > 0 ? nodes.map((item, key) => <SideBarNode key={key} />) : "Nothing "}
+        {nodes && nodes.length > 0 ? nodes.map((item) => <SideBarNode key={item.id} node={item} />) : "Nothing "}
       </div>
     </div>
   )
