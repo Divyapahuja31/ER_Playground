@@ -1,11 +1,14 @@
 import React from 'react'
-
+import SidebarTab from './sidebarTab';
 const Sidebar = () => {
   return (
     <div className="w-80 border-r border-slate-200 bg-white gray:border-zinc-800 light:bg-zinc-900 shrink-0">
       <div className='w-auto h-10 flex'>
-        hi
+        <SidebarTab name='Tables'/>
+        <SidebarTab name='Relationships'/>
+        <SidebarTab name='Notes'/>
       </div>
+
     </div>
   )
 }
