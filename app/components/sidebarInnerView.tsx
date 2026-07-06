@@ -2,23 +2,16 @@ import React, { useEffect, useState } from 'react'
 import { useNodes,useReactFlow } from '@xyflow/react'
 
 import SideBarNode from "./sidebarNode"
-import { resolveCollisions } from '../utils/conllision';
+import useNodeInsertion from '../hooks/useNodeInsertion';
 
 const SideInnerView = ({ name }: { name: string }) => {
   const nodes = useNodes();
-  const { addNodes } = useReactFlow();
+  const { addNode } = useNodeInsertion();
 
   const handleOnClick = () => {
-    const id = `${Date.now()}`;
-    const newNode = {
-      id,
-      type: 'default',
-      data: { label: `Node ${id.slice(-4)}` },
-      position: { x:0, y: 0 },
-    };
-    resolveCollisions(newNode, nodes);
-    addNodes(newNode);
+    addNode();
   }
+
 
   return (
     <div className='m-5'>

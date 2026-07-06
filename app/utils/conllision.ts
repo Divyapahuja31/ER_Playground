@@ -1,24 +1,11 @@
 import { type Node } from '@xyflow/react';
 
-export const resolveCollisions = (node: Node, nodes: Node[]) => {
-  let draggedNodeCenterX = node.position.x;
-  let draggedNodeCenterY = node.position.y;
+const COLLISION_THRESHOLD = 10;
 
-  nodes.map(selectedNode => {
-    const selectedNodeCenterX = selectedNode.position.x;
-    const selectedNodeCenterY = selectedNode.position.y;
+const isColliding = (currentNode: Node, Nodes: Node[]) => {
+  return Nodes.some(node => {
+    return (Math.abs(node.position.x - currentNode.position.x) < COLLISION_THRESHOLD && Math.abs(node.position.y - currentNode.position.y) < COLLISION_THRESHOLD);
+  });
+};
 
-    const dx = draggedNodeCenterX - selectedNodeCenterX;
-    const dy = draggedNodeCenterY - selectedNodeCenterY;
-
-
-    if (Math.abs(dy) < 10 && Math.abs(dx) < 10) {
-      draggedNodeCenterX += 10
-      draggedNodeCenterY += 10
-    }
-  })
-
-  node.position.x += draggedNodeCenterX;
-  node.position.y += draggedNodeCenterY;
-
-}
+export { isColliding}
