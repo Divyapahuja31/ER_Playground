@@ -42,4 +42,4 @@ const SideInnerView = ({ name }: { name: string }) => {
 
 }
 
-export default SideInnerView
+export default SideInnerView 
