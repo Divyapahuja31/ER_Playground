@@ -1,7 +1,10 @@
 import React, { useState } from 'react'
 
-const SideInnerView = () => {
-  const [tables, setTables] = useState([])
+import SideBarNode from "./sidebarNode"
+
+const SideInnerView = ({ name }: { name: string }) => {
+  const [nodes, setNodes] = useState<[]>([])
+
   return (
     <div className='m-5'>
       <div>
@@ -11,11 +14,11 @@ const SideInnerView = () => {
           placeholder='Search.....'
         />
         <button>
-          Add Table
+          Add {name}
         </button>
       </div>
       <div>
-        {tables && tables.length > 0 ? tables.map((item, key) => <div key={key}>{item}</div>) : "Nothing "}
+        {nodes && nodes.length > 0 ? nodes.map((item, key) => <SideBarNode key={key} />) : "Nothing "}
       </div>
     </div>
   )

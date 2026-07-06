@@ -9,7 +9,7 @@ const Sidebar = () => {
         <SidebarTab name='Relationships'/>
         <SidebarTab name='Notes'/>
       </div>
-      <SidebarInnerView />
+      <SidebarInnerView name='Table'/>
     </div>
   )
 }
