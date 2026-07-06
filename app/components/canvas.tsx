@@ -1,5 +1,5 @@
 import React from 'react';
-import { ReactFlow, useNodesState, useEdgesState,Background,Controls,} from '@xyflow/react';
+import { ReactFlow, useNodesState, useEdgesState, Background, Controls, SelectionMode } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
 function Canvas() {
@@ -13,6 +13,9 @@ function Canvas() {
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        panOnDrag={[1, 2]}
+        selectionOnDrag={true}
+        selectionMode={SelectionMode.Partial}
         fitView
       >
         <Background />
