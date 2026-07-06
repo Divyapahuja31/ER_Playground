@@ -6,7 +6,7 @@ function Canvas() {
   const [nodes, , onNodesChange] = useNodesState([]);
   const [edges, , onEdgesChange] = useEdgesState([]);
   return (
-    <div className="flex-1 h-full relative">
+    <div className="flex-1 h-full relative bg-white">
         <ReactFlow
           nodes={nodes}
           edges={edges}
