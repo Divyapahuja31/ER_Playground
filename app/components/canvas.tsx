@@ -3,10 +3,13 @@ import { ReactFlow, useNodesState, useEdgesState, Background, Controls, Selectio
 import '@xyflow/react/dist/style.css';
 import Sidebar from './sidebar';
 import useDrag from '../hooks/useDrag';
+import TableNode from './customNodes/TableNode';
 
 function Flow() {
   const [nodes, , onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+
+  const nodeTypes = {tableNode : TableNode};
 
   const {handleNodeDragStart, handleNodeDragStop} = useDrag();
 
@@ -40,6 +43,7 @@ function Flow() {
           onNodeDragStop={handleNodeDragStop}
           selectionMode={SelectionMode.Partial}
           fitView
+          nodeTypes={nodeTypes}
         >
           <Background />
           <Controls

@@ -8,8 +8,11 @@ function useNodeInsertion() {
     const id = `${Date.now()}`;
     const newNode = {
       id,
-      type: 'default',
-      data: { label: `Node ${id.slice(-4)}` },
+      type: 'tableNode',
+      data: { 
+        label: `Table ${id.slice(-4)}`,
+        fields: []
+      },
       position: { x:0, y: 0 },
     };
 
