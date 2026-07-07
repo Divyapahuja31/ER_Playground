@@ -31,7 +31,7 @@ const TableNode = ({ id, data }: TableNodeProps) => {
 
   return (
     <div className='w-36 bg-zinc-950 text-white flex flex-col p-2.5 rounded-lg border border-zinc-800 shadow-xl'>
-      <Handle type="target" position={Position.Top} className="w-2 h-2 bg-zinc-500 border border-zinc-950" />
+
 
       <div className='text-xs text-center font-bold border-b border-zinc-800 pb-1.5 mb-1.5 select-none'>
         {data.label}
@@ -39,9 +39,18 @@ const TableNode = ({ id, data }: TableNodeProps) => {
 
       {/* ----------middle section --------- */}
       {fields.length > 0 && (
-        <div className="flex flex-col gap-1 mb-1.5 max-h-36 overflow-y-auto overflow-x-hidden pr-0.5">
+        <div className="flex flex-col gap-1 mb-1.5">
           {fields.map((field, index) => (
-            <div key={index} className="flex items-center gap-1 nodrag w-full">
+            <div key={index} className="flex items-center gap-1 nodrag w-full relative">
+              {/* Target Handle on the left border */}
+              <Handle
+                type="target"
+                position={Position.Left}
+                id={`target-${index}`}
+                className="w-2 h-2 bg-zinc-500 border border-zinc-950"
+                style={{ left: -10 }}
+              />
+
               <input
                 type="text"
                 value={field}
@@ -57,6 +66,15 @@ const TableNode = ({ id, data }: TableNodeProps) => {
               >
                 &times;
               </button>
+
+              {/* Source Handle on the right border */}
+              <Handle
+                type="source"
+                position={Position.Right}
+                id={`source-${index}`}
+                className="w-2 h-2 bg-zinc-500 border border-zinc-950"
+                style={{ right: -10 }}
+              />
             </div>
           ))}
         </div>
@@ -74,7 +92,6 @@ const TableNode = ({ id, data }: TableNodeProps) => {
       </div>
 
       {/* Bottom Handle */}
-      <Handle type="source" position={Position.Bottom} className="w-2 h-2 bg-zinc-500 border border-zinc-950" />
     </div>
   );
 };
