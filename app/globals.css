@@ -5,3 +5,10 @@
   border-color: red !important;
   box-shadow: 0 0 10px red !important;
 }
+
+.react-flow__node.react-flow__node-tableNode {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+}
