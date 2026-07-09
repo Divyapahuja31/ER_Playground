@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import { type NodeProps, type Node, Handle, Position, useReactFlow } from '@xyflow/react';
 
-export type Relation = {
+export type AttributeRelation = {
+  id: string;
+  role: 'SOURCE' | 'TARGET';
   tableId: string;
   attributeId: string;
   cardinality: 'ONE_TO_ONE' | 'ONE_TO_MANY' | 'MANY_TO_ONE' | 'MANY_TO_MANY';
@@ -12,7 +14,7 @@ export type Attribute = {
   name: string;
   datatype: string;
   constraints: string[];
-  relation?: Relation;
+  relations?: AttributeRelation[];
 };
 
 export type TableNodeData = {
@@ -50,16 +52,118 @@ const getConstraintIcons = (constraints: string[]) => {
   return icons;
 };
 
+const syncRelationsAfterEdit = (
+  nodesList: Node[],
+  currentNodeId: string,
+  currentAttrId: string,
+  oldRelations: AttributeRelation[],
+  newRelations: AttributeRelation[]
+): Node[] => {
+  const oldIds = oldRelations.map(r => r.id);
+  const newIds = newRelations.map(r => r.id);
+  const deletedIds = oldIds.filter(id => !newIds.includes(id));
+
+  let updatedNodes = JSON.parse(JSON.stringify(nodesList)) as Node[];
+
+  // 1. Clear any deleted relations from all other attributes in the graph
+  if (deletedIds.length > 0) {
+    updatedNodes = updatedNodes.map(node => {
+      if (node.type !== 'tableNode') return node;
+      const data = node.data as TableNodeData;
+      const updatedAttributes = (data.attributes || []).map(attr => {
+        if (!attr.relations || attr.relations.length === 0) return attr;
+        
+        const hasDeletedSource = attr.relations.some(
+          r => r.role === 'SOURCE' && deletedIds.includes(r.id)
+        );
+        const remainingRelations = attr.relations.filter(
+          r => !deletedIds.includes(r.id)
+        );
+
+        let constraints = attr.constraints || [];
+        if (hasDeletedSource) {
+          constraints = constraints.filter(c => c !== 'FOREIGN_KEY');
+        }
+
+        return {
+          ...attr,
+          constraints,
+          relations: remainingRelations.length > 0 ? remainingRelations : undefined
+        };
+      });
+      return {
+        ...node,
+        data: {
+          ...data,
+          attributes: updatedAttributes
+        }
+      };
+    });
+  }
+
+  // 2. Add or update the counterpart relations for all newRelations
+  for (const rel of newRelations) {
+    updatedNodes = updatedNodes.map(node => {
+      if (node.id !== rel.tableId) return node;
+      const data = node.data as TableNodeData;
+      const updatedAttributes = (data.attributes || []).map(attr => {
+        if (attr.id !== rel.attributeId) return attr;
+
+        const currentRelations = attr.relations || [];
+        const counterpartRole = rel.role === 'SOURCE' ? 'TARGET' : 'SOURCE';
+        
+        const existingIdx = currentRelations.findIndex(r => r.id === rel.id);
+        const updatedRelations = [...currentRelations];
+        
+        const counterpartRelation: AttributeRelation = {
+          id: rel.id,
+          role: counterpartRole,
+          tableId: currentNodeId,
+          attributeId: currentAttrId,
+          cardinality: rel.cardinality
+        };
+
+        if (existingIdx >= 0) {
+          updatedRelations[existingIdx] = counterpartRelation;
+        } else {
+          updatedRelations.push(counterpartRelation);
+        }
+
+        let constraints = attr.constraints || [];
+        if (counterpartRole === 'SOURCE' && !constraints.includes('FOREIGN_KEY')) {
+          constraints = [...constraints, 'FOREIGN_KEY'];
+        }
+
+        return {
+          ...attr,
+          constraints,
+          relations: updatedRelations
+        };
+      });
+
+      return {
+        ...node,
+        data: {
+          ...data,
+          attributes: updatedAttributes
+        }
+      };
+    });
+  }
+
+  return updatedNodes;
+};
+
 const TableNode = ({ id, data }: TableNodeProps) => {
-  const { getNodes, updateNodeData } = useReactFlow();
+  const { getNodes, setNodes, updateNodeData } = useReactFlow();
   const attributes = data.attributes || [];
 
-  const resolveRelationDetails = (relation: Relation) => {
+  const resolveRelationDetails = (relation: AttributeRelation) => {
     const allNodes = getNodes();
-    const targetNode = allNodes.find(n => n.id === relation.tableId);
+    const targetNode = allNodes.find(n => n.id === relation.tableId) as Node<TableNodeData> | undefined;
     if (!targetNode) return null;
     
-    const targetData = targetNode.data as TableNodeData;
+    const targetData = targetNode.data;
     const targetAttr = (targetData.attributes || []).find(a => a.id === relation.attributeId);
     if (!targetAttr) return null;
     
@@ -84,10 +188,7 @@ const TableNode = ({ id, data }: TableNodeProps) => {
   const [tempDatatype, setTempDatatype] = useState('VARCHAR');
   const [tempConstraints, setTempConstraints] = useState<string[]>([]);
   
-  // Relation form states
-  const [tempRelationTableId, setTempRelationTableId] = useState('');
-  const [tempRelationAttributeId, setTempRelationAttributeId] = useState('');
-  const [tempRelationCardinality, setTempRelationCardinality] = useState<'ONE_TO_ONE' | 'ONE_TO_MANY' | 'MANY_TO_ONE' | 'MANY_TO_MANY'>('ONE_TO_ONE');
+  const [tempRelations, setTempRelations] = useState<AttributeRelation[]>([]);
 
   // Hover handlers with 250ms delay
   const handleHeaderMouseEnter = () => {
@@ -134,22 +235,16 @@ const TableNode = ({ id, data }: TableNodeProps) => {
     setTempName(`field_${attributes.length + 1}`);
     setTempDatatype('VARCHAR');
     setTempConstraints([]);
-    setTempRelationTableId('');
-    setTempRelationAttributeId('');
-    setTempRelationCardinality('ONE_TO_ONE');
+    setTempRelations([]);
     setIsAddingAttr(true);
     setIsHeaderHovered(false);
   };
 
   const saveNewAttribute = () => {
     const newId = `attr-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const relation = tempConstraints.includes('FOREIGN_KEY') && tempRelationTableId && tempRelationAttributeId
-      ? {
-          tableId: tempRelationTableId,
-          attributeId: tempRelationAttributeId,
-          cardinality: tempRelationCardinality
-        }
-      : undefined;
+    const finalRelations = tempConstraints.includes('FOREIGN_KEY')
+      ? tempRelations
+      : tempRelations.filter(r => r.role !== 'SOURCE');
 
     const newAttributes: Attribute[] = [
       ...attributes,
@@ -158,10 +253,31 @@ const TableNode = ({ id, data }: TableNodeProps) => {
         name: tempName,
         datatype: tempDatatype,
         constraints: tempConstraints,
-        relation
+        relations: finalRelations.length > 0 ? finalRelations : undefined
       }
     ];
-    updateNodeData(id, { attributes: newAttributes });
+
+    setNodes((nds) => {
+      const nextNodes = nds.map((node) => {
+        if (node.id !== id) return node;
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            attributes: newAttributes
+          }
+        };
+      });
+
+      return syncRelationsAfterEdit(
+        nextNodes,
+        id,
+        newId,
+        [],
+        finalRelations
+      );
+    });
+
     setIsAddingAttr(false);
   };
 
@@ -170,45 +286,81 @@ const TableNode = ({ id, data }: TableNodeProps) => {
     setTempName(attr.name);
     setTempDatatype(attr.datatype);
     setTempConstraints(attr.constraints || []);
-    if (attr.relation) {
-      setTempRelationTableId(attr.relation.tableId);
-      setTempRelationAttributeId(attr.relation.attributeId);
-      setTempRelationCardinality(attr.relation.cardinality);
-    } else {
-      setTempRelationTableId('');
-      setTempRelationAttributeId('');
-      setTempRelationCardinality('ONE_TO_ONE');
-    }
+    setTempRelations(attr.relations ? JSON.parse(JSON.stringify(attr.relations)) : []);
     setEditingAttrIndex(index);
     setHoveredAttrId(null);
   };
 
   const saveEditedAttribute = () => {
     if (editingAttrIndex === null) return;
-    const relation = tempConstraints.includes('FOREIGN_KEY') && tempRelationTableId && tempRelationAttributeId
-      ? {
-          tableId: tempRelationTableId,
-          attributeId: tempRelationAttributeId,
-          cardinality: tempRelationCardinality
-        }
-      : undefined;
+    const oldAttr = attributes[editingAttrIndex];
+    const oldRelations = oldAttr.relations || [];
 
-    const newAttributes = [...attributes];
-    newAttributes[editingAttrIndex] = {
-      ...newAttributes[editingAttrIndex],
+    const finalRelations = tempConstraints.includes('FOREIGN_KEY')
+      ? tempRelations
+      : tempRelations.filter(r => r.role !== 'SOURCE');
+
+    const updatedAttributes = [...attributes];
+    updatedAttributes[editingAttrIndex] = {
+      ...updatedAttributes[editingAttrIndex],
       name: tempName,
       datatype: tempDatatype,
       constraints: tempConstraints,
-      relation
+      relations: finalRelations.length > 0 ? finalRelations : undefined
     };
-    updateNodeData(id, { attributes: newAttributes });
+
+    setNodes((nds) => {
+      const nextNodes = nds.map((node) => {
+        if (node.id !== id) return node;
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            attributes: updatedAttributes
+          }
+        };
+      });
+
+      return syncRelationsAfterEdit(
+        nextNodes,
+        id,
+        oldAttr.id,
+        oldRelations,
+        finalRelations
+      );
+    });
+
     setEditingAttrIndex(null);
   };
 
   const deleteAttribute = () => {
     if (editingAttrIndex === null) return;
+    const attr = attributes[editingAttrIndex];
+    const oldRelations = attr.relations || [];
+
     const newAttributes = attributes.filter((_, index) => index !== editingAttrIndex);
-    updateNodeData(id, { attributes: newAttributes });
+
+    setNodes((nds) => {
+      const nextNodes = nds.map((node) => {
+        if (node.id !== id) return node;
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            attributes: newAttributes
+          }
+        };
+      });
+
+      return syncRelationsAfterEdit(
+        nextNodes,
+        id,
+        attr.id,
+        oldRelations,
+        []
+      );
+    });
+
     setEditingAttrIndex(null);
   };
 
@@ -216,19 +368,28 @@ const TableNode = ({ id, data }: TableNodeProps) => {
     if (tempConstraints.includes(value)) {
       setTempConstraints(tempConstraints.filter((c) => c !== value));
       if (value === 'FOREIGN_KEY') {
-        setTempRelationTableId('');
-        setTempRelationAttributeId('');
+        setTempRelations(prev => prev.filter(r => r.role !== 'SOURCE'));
       }
     } else {
       setTempConstraints([...tempConstraints, value]);
       if (value === 'FOREIGN_KEY') {
         const allNodes = getNodes();
         const otherTables = allNodes.filter((n) => n.id !== id && n.type === 'tableNode') as Node<TableNodeData>[];
-        if (otherTables.length > 0 && !tempRelationTableId) {
-          setTempRelationTableId(otherTables[0].id);
-          const otherAttrs = otherTables[0].data.attributes || [];
-          if (otherAttrs.length > 0) {
-            setTempRelationAttributeId(otherAttrs[0].id);
+        if (otherTables.length > 0) {
+          const defaultTableId = otherTables[0].id;
+          const defaultAttrId = (otherTables[0].data.attributes || [])[0]?.id || '';
+          
+          if (!tempRelations.some(r => r.role === 'SOURCE')) {
+            setTempRelations(prev => [
+              ...prev,
+              {
+                id: `rel-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                role: 'SOURCE',
+                tableId: defaultTableId,
+                attributeId: defaultAttrId,
+                cardinality: 'ONE_TO_ONE'
+              }
+            ]);
           }
         }
       }
@@ -319,25 +480,54 @@ const TableNode = ({ id, data }: TableNodeProps) => {
                 </div>
 
                 {/* Relationship info below the attribute (if any) */}
-                {attr.relation && (
+                {attr.relations && attr.relations.length > 0 && (
                   (() => {
-                    const resolved = resolveRelationDetails(attr.relation);
-                    if (!resolved) return null;
-                    
-                    let cardLabel = '1 → 1';
-                    if (attr.relation.cardinality === 'ONE_TO_MANY') cardLabel = '1 → M';
-                    else if (attr.relation.cardinality === 'MANY_TO_ONE') cardLabel = 'M → 1';
-                    else if (attr.relation.cardinality === 'MANY_TO_MANY') cardLabel = 'M → M';
+                    const sourceRelations = attr.relations.filter(r => r.role === 'SOURCE');
+                    const targetRelations = attr.relations.filter(r => r.role === 'TARGET');
 
                     return (
-                      <div className="text-[9px] text-zinc-500 mt-1 border-t border-zinc-900/40 pt-1 flex flex-col gap-0.5 select-none pointer-events-none">
-                        <div className="flex items-center gap-1">
-                          <span className="text-[10px]">🔗</span>
-                          <span>References <strong className="text-zinc-400 font-medium">{resolved.tableName}.{resolved.attributeName}</strong></span>
-                        </div>
-                        <div className="text-[8px] text-zinc-600 font-semibold uppercase tracking-wider pl-3.5">
-                          Cardinality: {cardLabel}
-                        </div>
+                      <div className="text-[9px] text-zinc-500 mt-1 border-t border-zinc-800/20 pt-1 flex flex-col gap-1 select-none pointer-events-none">
+                        {/* Outgoing Reference (Foreign Key role) */}
+                        {sourceRelations.map((rel) => {
+                          const resolved = resolveRelationDetails(rel);
+                          if (!resolved) return null;
+                          
+                          let cardLabel = '1 → 1';
+                          if (rel.cardinality === 'ONE_TO_MANY') cardLabel = '1 → M';
+                          else if (rel.cardinality === 'MANY_TO_ONE') cardLabel = 'M → 1';
+                          else if (rel.cardinality === 'MANY_TO_MANY') cardLabel = 'M → M';
+
+                          return (
+                            <div key={rel.id} className="flex flex-col gap-0.5">
+                              <div className="flex items-center gap-1">
+                                <span className="text-[10px]">🔗</span>
+                                <span>References <strong className="text-zinc-400 font-medium">{resolved.tableName}.{resolved.attributeName}</strong></span>
+                              </div>
+                              <div className="text-[8px] text-zinc-600 font-semibold uppercase tracking-wider pl-3.5">
+                                Cardinality: {cardLabel}
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {/* Incoming References (Referenced By role) */}
+                        {targetRelations.length > 0 && (
+                          <div className="flex flex-col gap-0.5 mt-0.5">
+                            <span className="text-[8px] text-zinc-500 font-semibold uppercase tracking-wider">Referenced By</span>
+                            <div className="flex flex-col gap-0.5 pl-1 text-[9px] text-zinc-400">
+                              {targetRelations.map((rel) => {
+                                const resolved = resolveRelationDetails(rel);
+                                if (!resolved) return null;
+                                return (
+                                  <div key={rel.id} className="flex items-center gap-1">
+                                    <span>•</span>
+                                    <span>{resolved.tableName}.{resolved.attributeName}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })()
@@ -446,67 +636,147 @@ const TableNode = ({ id, data }: TableNodeProps) => {
                   </div>
 
                   {/* Foreign Key Relation Fields */}
-                  {tempConstraints.includes('FOREIGN_KEY') && (
-                    <div className="flex flex-col gap-2 border-t border-zinc-800/60 pt-2 mt-1 animate-in fade-in slide-in-from-top-1 duration-150">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] text-zinc-400 uppercase tracking-wider">References Table</label>
-                        <select
-                          value={tempRelationTableId}
-                          onChange={(e) => {
-                            const selectedTableId = e.target.value;
-                            setTempRelationTableId(selectedTableId);
-                            const allNodes = getNodes();
-                            const targetTable = allNodes.find(n => n.id === selectedTableId) as Node<TableNodeData> | undefined;
-                            if (targetTable) {
-                              const targetAttrs = targetTable.data.attributes || [];
-                              setTempRelationAttributeId(targetAttrs[0]?.id || '');
-                            } else {
-                              setTempRelationAttributeId('');
-                            }
-                          }}
-                          className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
-                        >
-                          <option value="">Select Table...</option>
-                          {(getNodes()
-                            .filter((n) => n.id !== id && n.type === 'tableNode') as Node<TableNodeData>[])
-                            .map((n) => (
-                              <option key={n.id} value={n.id}>
-                                {n.data.label}
-                              </option>
-                            ))}
-                        </select>
-                      </div>
+                  {tempConstraints.includes('FOREIGN_KEY') && (() => {
+                    const sourceRel = tempRelations.find(r => r.role === 'SOURCE');
+                    const selectedTableId = sourceRel?.tableId || '';
+                    const selectedAttrId = sourceRel?.attributeId || '';
+                    const selectedCardinality = sourceRel?.cardinality || 'ONE_TO_ONE';
 
-                      {tempRelationTableId && (
+                    return (
+                      <div className="flex flex-col gap-2 border-t border-zinc-800/60 pt-2 mt-1 animate-in fade-in slide-in-from-top-1 duration-150">
                         <div className="flex flex-col gap-1">
-                          <label className="text-[9px] text-zinc-400 uppercase tracking-wider">References Column</label>
+                          <label className="text-[9px] text-zinc-400 uppercase tracking-wider">References Table</label>
                           <select
-                            value={tempRelationAttributeId}
-                            onChange={(e) => setTempRelationAttributeId(e.target.value)}
+                            value={selectedTableId}
+                            onChange={(e) => {
+                              const tableId = e.target.value;
+                              const allNodes = getNodes();
+                              const targetTable = allNodes.find(n => n.id === tableId) as Node<TableNodeData> | undefined;
+                              const targetAttrs = targetTable?.data.attributes || [];
+                              const defaultAttrId = targetAttrs[0]?.id || '';
+                              
+                              setTempRelations(prev => {
+                                const filtered = prev.filter(r => r.role !== 'SOURCE');
+                                if (!tableId) return filtered;
+                                return [
+                                  ...filtered,
+                                  {
+                                    id: sourceRel?.id || `rel-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                                    role: 'SOURCE',
+                                    tableId,
+                                    attributeId: defaultAttrId,
+                                    cardinality: selectedCardinality
+                                  }
+                                ];
+                              });
+                            }}
                             className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
                           >
-                            <option value="">Select Column...</option>
-                            {((getNodes().find((n) => n.id === tempRelationTableId) as Node<TableNodeData> | undefined)?.data.attributes || []).map((a) => (
-                              <option key={a.id} value={a.id}>
-                                {a.name}
-                              </option>
-                            ))}
+                            <option value="">Select Table...</option>
+                            {(getNodes()
+                              .filter((n) => n.id !== id && n.type === 'tableNode') as Node<TableNodeData>[])
+                              .map((n) => (
+                                <option key={n.id} value={n.id}>
+                                  {n.data.label}
+                                </option>
+                              ))}
                           </select>
                         </div>
-                      )}
 
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[9px] text-zinc-400 uppercase tracking-wider">Cardinality</label>
-                        <select
-                          value={tempRelationCardinality}
-                          onChange={(e) => setTempRelationCardinality(e.target.value as any)}
-                          className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
-                        >
-                          <option value="ONE_TO_ONE">One to One (1 → 1)</option>
-                          <option value="ONE_TO_MANY">One to Many (1 → M)</option>
-                          <option value="MANY_TO_ONE">Many to One (M → 1)</option>
-                          <option value="MANY_TO_MANY">Many to Many (M → M)</option>
-                        </select>
+                        {selectedTableId && (
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[9px] text-zinc-400 uppercase tracking-wider">References Column</label>
+                            <select
+                              value={selectedAttrId}
+                              onChange={(e) => {
+                                const attrId = e.target.value;
+                                setTempRelations(prev => prev.map(r => {
+                                  if (r.role !== 'SOURCE') return r;
+                                  return { ...r, attributeId: attrId };
+                                }));
+                              }}
+                              className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
+                            >
+                              <option value="">Select Column...</option>
+                              {((getNodes().find((n) => n.id === selectedTableId) as Node<TableNodeData> | undefined)?.data.attributes || []).map((a) => (
+                                <option key={a.id} value={a.id}>
+                                  {a.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[9px] text-zinc-400 uppercase tracking-wider">Cardinality</label>
+                          <select
+                            value={selectedCardinality}
+                            onChange={(e) => {
+                              const card = e.target.value as any;
+                              setTempRelations(prev => prev.map(r => {
+                                  if (r.role !== 'SOURCE') return r;
+                                  return { ...r, cardinality: card };
+                              }));
+                            }}
+                            className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
+                          >
+                            <option value="ONE_TO_ONE">One to One (1 → 1)</option>
+                            <option value="ONE_TO_MANY">One to Many (1 → M)</option>
+                            <option value="MANY_TO_ONE">Many to One (M → 1)</option>
+                            <option value="MANY_TO_MANY">Many to Many (M → M)</option>
+                          </select>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Incoming Target Relations List (Referenced By) */}
+                  {tempRelations.filter(r => r.role === 'TARGET').length > 0 && (
+                    <div className="flex flex-col gap-2 border-t border-zinc-800/60 pt-2 mt-2">
+                      <span className="text-[9px] text-zinc-400 uppercase tracking-wider font-semibold">Incoming References</span>
+                      <div className="flex flex-col gap-2 max-h-36 overflow-y-auto pr-1">
+                        {tempRelations.filter(r => r.role === 'TARGET').map((rel) => {
+                          const resolved = resolveRelationDetails(rel);
+                          if (!resolved) return null;
+                          return (
+                            <div key={rel.id} className="bg-zinc-900/40 border border-zinc-800 p-2 rounded flex flex-col gap-1 text-[10px]">
+                              <div className="flex justify-between items-center text-zinc-300">
+                                <span className="font-medium truncate">{resolved.tableName}.{resolved.attributeName}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setTempRelations(prev => prev.filter(r => r.id !== rel.id));
+                                  }}
+                                  className="text-red-400 hover:text-red-300 cursor-pointer transition-colors text-[9px] px-1 bg-red-950/20 hover:bg-red-950/40 rounded"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                              <div className="flex items-center gap-1.5 justify-between">
+                                <span className="text-[8px] text-zinc-500 uppercase font-semibold">Cardinality</span>
+                                <select
+                                  value={rel.cardinality}
+                                  onChange={(e) => {
+                                    const nextCard = e.target.value as any;
+                                    setTempRelations(prev => prev.map(r => {
+                                      if (r.id !== rel.id) return r;
+                                      return {
+                                        ...r,
+                                        cardinality: nextCard
+                                      };
+                                    }));
+                                  }}
+                                  className="bg-zinc-900 border border-zinc-800 rounded px-1 py-0.5 text-[9px] text-zinc-100 focus:outline-none focus:border-zinc-500 cursor-pointer"
+                                >
+                                  <option value="ONE_TO_ONE">One to One (1 → 1)</option>
+                                  <option value="ONE_TO_MANY">One to Many (1 → M)</option>
+                                  <option value="MANY_TO_ONE">Many to One (M → 1)</option>
+                                  <option value="MANY_TO_MANY">Many to Many (M → M)</option>
+                                </select>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -629,70 +899,99 @@ const TableNode = ({ id, data }: TableNodeProps) => {
           </div>
 
           {/* Foreign Key Relation Fields */}
-          {tempConstraints.includes('FOREIGN_KEY') && (
-            <div className="flex flex-col gap-2 border-t border-zinc-800/60 pt-2 mt-1 animate-in fade-in slide-in-from-top-1 duration-150">
-              <div className="flex flex-col gap-1">
-                <label className="text-[9px] text-zinc-400 uppercase tracking-wider">References Table</label>
-                <select
-                  value={tempRelationTableId}
-                  onChange={(e) => {
-                    const selectedTableId = e.target.value;
-                    setTempRelationTableId(selectedTableId);
-                    const allNodes = getNodes();
-                    const targetTable = allNodes.find(n => n.id === selectedTableId) as Node<TableNodeData> | undefined;
-                    if (targetTable) {
-                      const targetAttrs = targetTable.data.attributes || [];
-                      setTempRelationAttributeId(targetAttrs[0]?.id || '');
-                    } else {
-                      setTempRelationAttributeId('');
-                    }
-                  }}
-                  className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
-                >
-                  <option value="">Select Table...</option>
-                  {(getNodes()
-                    .filter((n) => n.id !== id && n.type === 'tableNode') as Node<TableNodeData>[])
-                    .map((n) => (
-                      <option key={n.id} value={n.id}>
-                        {n.data.label}
-                      </option>
-                    ))}
-                </select>
-              </div>
+          {tempConstraints.includes('FOREIGN_KEY') && (() => {
+            const sourceRel = tempRelations.find(r => r.role === 'SOURCE');
+            const selectedTableId = sourceRel?.tableId || '';
+            const selectedAttrId = sourceRel?.attributeId || '';
+            const selectedCardinality = sourceRel?.cardinality || 'ONE_TO_ONE';
 
-              {tempRelationTableId && (
+            return (
+              <div className="flex flex-col gap-2 border-t border-zinc-800/60 pt-2 mt-1 animate-in fade-in slide-in-from-top-1 duration-150">
                 <div className="flex flex-col gap-1">
-                  <label className="text-[9px] text-zinc-400 uppercase tracking-wider">References Column</label>
+                  <label className="text-[9px] text-zinc-400 uppercase tracking-wider">References Table</label>
                   <select
-                    value={tempRelationAttributeId}
-                    onChange={(e) => setTempRelationAttributeId(e.target.value)}
+                    value={selectedTableId}
+                    onChange={(e) => {
+                      const tableId = e.target.value;
+                      const allNodes = getNodes();
+                      const targetTable = allNodes.find(n => n.id === tableId) as Node<TableNodeData> | undefined;
+                      const targetAttrs = targetTable?.data.attributes || [];
+                      const defaultAttrId = targetAttrs[0]?.id || '';
+                      
+                      setTempRelations(prev => {
+                        const filtered = prev.filter(r => r.role !== 'SOURCE');
+                        if (!tableId) return filtered;
+                        return [
+                          ...filtered,
+                          {
+                            id: sourceRel?.id || `rel-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                            role: 'SOURCE',
+                            tableId,
+                            attributeId: defaultAttrId,
+                            cardinality: selectedCardinality
+                          }
+                        ];
+                      });
+                    }}
                     className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
                   >
-                    <option value="">Select Column...</option>
-                    {((getNodes().find((n) => n.id === tempRelationTableId) as Node<TableNodeData> | undefined)?.data.attributes || []).map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.name}
-                      </option>
-                    ))}
+                    <option value="">Select Table...</option>
+                    {(getNodes()
+                      .filter((n) => n.id !== id && n.type === 'tableNode') as Node<TableNodeData>[])
+                      .map((n) => (
+                        <option key={n.id} value={n.id}>
+                          {n.data.label}
+                        </option>
+                      ))}
                   </select>
                 </div>
-              )}
 
-              <div className="flex flex-col gap-1">
-                <label className="text-[9px] text-zinc-400 uppercase tracking-wider">Cardinality</label>
-                <select
-                  value={tempRelationCardinality}
-                  onChange={(e) => setTempRelationCardinality(e.target.value as any)}
-                  className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
-                >
-                  <option value="ONE_TO_ONE">One to One (1 → 1)</option>
-                  <option value="ONE_TO_MANY">One to Many (1 → M)</option>
-                  <option value="MANY_TO_ONE">Many to One (M → 1)</option>
-                  <option value="MANY_TO_MANY">Many to Many (M → M)</option>
-                </select>
+                {selectedTableId && (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[9px] text-zinc-400 uppercase tracking-wider">References Column</label>
+                    <select
+                      value={selectedAttrId}
+                      onChange={(e) => {
+                        const attrId = e.target.value;
+                        setTempRelations(prev => prev.map(r => {
+                          if (r.role !== 'SOURCE') return r;
+                          return { ...r, attributeId: attrId };
+                        }));
+                      }}
+                      className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
+                    >
+                      <option value="">Select Column...</option>
+                      {((getNodes().find((n) => n.id === selectedTableId) as Node<TableNodeData> | undefined)?.data.attributes || []).map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-[9px] text-zinc-400 uppercase tracking-wider">Cardinality</label>
+                  <select
+                    value={selectedCardinality}
+                    onChange={(e) => {
+                      const card = e.target.value as any;
+                      setTempRelations(prev => prev.map(r => {
+                          if (r.role !== 'SOURCE') return r;
+                          return { ...r, cardinality: card };
+                      }));
+                    }}
+                    className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
+                  >
+                    <option value="ONE_TO_ONE">One to One (1 → 1)</option>
+                    <option value="ONE_TO_MANY">One to Many (1 → M)</option>
+                    <option value="MANY_TO_ONE">Many to One (M → 1)</option>
+                    <option value="MANY_TO_MANY">Many to Many (M → M)</option>
+                  </select>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           <div className="flex justify-end gap-1.5 text-[10px] mt-2">
             <button

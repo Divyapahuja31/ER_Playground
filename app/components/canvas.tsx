@@ -9,8 +9,7 @@ import RelationshipEdge from './CustomEdge/RelationshipEdge';
 
 const reconstructEdgesFromNodes = (
   nodesList: Node[],
-  toggleSource: (id: string) => void,
-  toggleTarget: (id: string) => void
+  toggleCardinality: (id: string) => void
 ): Edge[] => {
   const newEdges: Edge[] = [];
   for (const node of nodesList) {
@@ -18,127 +17,178 @@ const reconstructEdgesFromNodes = (
     const data = node.data as TableNodeData;
     const attributes = data.attributes || [];
     for (const attr of attributes) {
-      if (!attr.relation) continue;
-      const relation = attr.relation;
+      if (!attr.relations) continue;
+      for (const relation of attr.relations) {
+        if (relation.role !== 'SOURCE') continue;
 
-      let sourceCardinality = '1';
-      let targetCardinality = '1';
+        // Verify that the target node and target attribute exist in the current nodesList
+        const targetNode = nodesList.find((n) => n.id === relation.tableId) as Node<TableNodeData> | undefined;
+        if (!targetNode) continue;
 
-      if (relation.cardinality === 'ONE_TO_ONE') {
-        sourceCardinality = '1';
-        targetCardinality = '1';
-      } else if (relation.cardinality === 'ONE_TO_MANY') {
-        sourceCardinality = '1';
-        targetCardinality = 'M';
-      } else if (relation.cardinality === 'MANY_TO_ONE') {
-        sourceCardinality = 'M';
-        targetCardinality = '1';
-      } else if (relation.cardinality === 'MANY_TO_MANY') {
-        sourceCardinality = 'M';
-        targetCardinality = 'M';
+        const targetAttrs = targetNode.data?.attributes || [];
+        const targetAttrExists = targetAttrs.some((a) => a.id === relation.attributeId);
+        if (!targetAttrExists) continue;
+
+        let sourceCardinality = '1';
+        let targetCardinality = '1';
+
+        if (relation.cardinality === 'ONE_TO_ONE') {
+          sourceCardinality = '1';
+          targetCardinality = '1';
+        } else if (relation.cardinality === 'ONE_TO_MANY') {
+          sourceCardinality = '1';
+          targetCardinality = 'M';
+        } else if (relation.cardinality === 'MANY_TO_ONE') {
+          sourceCardinality = 'M';
+          targetCardinality = '1';
+        } else if (relation.cardinality === 'MANY_TO_MANY') {
+          sourceCardinality = 'M';
+          targetCardinality = 'M';
+        }
+
+        const edgeId = relation.id;
+
+        newEdges.push({
+          id: edgeId,
+          source: node.id,
+          sourceHandle: attr.id,
+          target: relation.tableId,
+          targetHandle: relation.attributeId,
+          type: 'relationshipEdge',
+          data: {
+            sourceCardinality,
+            targetCardinality,
+            onToggleCardinality: toggleCardinality,
+          },
+        });
       }
-
-      const edgeId = `edge-${node.id}-${attr.id}-${relation.tableId}-${relation.attributeId}`;
-
-      newEdges.push({
-        id: edgeId,
-        source: node.id,
-        sourceHandle: attr.id,
-        target: relation.tableId,
-        targetHandle: relation.attributeId,
-        type: 'relationshipEdge',
-        data: {
-          sourceCardinality,
-          targetCardinality,
-          onToggleSource: toggleSource,
-          onToggleTarget: toggleTarget,
-        },
-      });
     }
   }
   return newEdges;
 };
 
+export const migrateOldSchema = (cleanData: any): any => {
+  if (!cleanData || !cleanData.tables) return cleanData;
+  
+  const tables = JSON.parse(JSON.stringify(cleanData.tables));
+  
+  // 1. Migrate intermediate 'relation' object to 'relations' array on all attributes
+  for (const table of tables) {
+    if (!table.attributes) continue;
+    for (const attr of table.attributes) {
+      if (attr.relation) {
+        const relId = attr.relation.id || `rel-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        attr.relations = [
+          {
+            id: relId,
+            role: 'SOURCE',
+            tableId: attr.relation.tableId,
+            attributeId: attr.relation.attributeId,
+            cardinality: attr.relation.cardinality || 'ONE_TO_ONE'
+          }
+        ];
+        delete attr.relation;
+      }
+    }
+  }
+
+  // 2. Migrate very old 'relationships' array to 'relations' arrays
+  if (cleanData.relationships && Array.isArray(cleanData.relationships)) {
+    for (const rel of cleanData.relationships) {
+      const relationId = rel.id || `rel-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      
+      const sourceTable = tables.find((t: any) => t.id === rel.source?.table || t.name === rel.source?.table);
+      const targetTable = tables.find((t: any) => t.id === rel.target?.table || t.name === rel.target?.table);
+
+      if (sourceTable && targetTable) {
+        const sourceAttr = sourceTable.attributes?.find((a: any) => a.id === rel.source?.attribute || a.name === rel.source?.attribute);
+        const targetAttr = targetTable.attributes?.find((a: any) => a.id === rel.target?.attribute || a.name === rel.target?.attribute);
+
+        if (sourceAttr && targetAttr) {
+          sourceAttr.relations = sourceAttr.relations || [];
+          if (!sourceAttr.relations.some((r: any) => r.id === relationId)) {
+            sourceAttr.relations.push({
+              id: relationId,
+              role: 'SOURCE',
+              tableId: targetTable.id,
+              attributeId: targetAttr.id,
+              cardinality: rel.cardinality || 'ONE_TO_ONE'
+            });
+          }
+          sourceAttr.constraints = sourceAttr.constraints || [];
+          if (!sourceAttr.constraints.includes('FOREIGN_KEY')) {
+            sourceAttr.constraints.push('FOREIGN_KEY');
+          }
+
+          targetAttr.relations = targetAttr.relations || [];
+          if (!targetAttr.relations.some((r: any) => r.id === relationId)) {
+            targetAttr.relations.push({
+              id: relationId,
+              role: 'TARGET',
+              tableId: sourceTable.id,
+              attributeId: sourceAttr.id,
+              cardinality: rel.cardinality || 'ONE_TO_ONE'
+            });
+          }
+        }
+      }
+    }
+  }
+
+  const { relationships, ...rest } = cleanData;
+  return {
+    ...rest,
+    tables
+  };
+};
+
+const nodeTypes = { tableNode: TableNode };
+const edgeTypes = { relationshipEdge: RelationshipEdge };
+
 function Flow() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
-  const nodeTypes = { tableNode: TableNode };
-  const edgeTypes = { relationshipEdge: RelationshipEdge };
-
   const { handleNodeDragStart, handleNodeDragStop } = useDrag();
 
-  const toggleSourceCardinality = useCallback(
+  const toggleCardinality = useCallback(
     (edgeId: string) => {
       const edge = edges.find((e) => e.id === edgeId);
-      if (!edge || !edge.source || !edge.sourceHandle) return;
+      if (!edge) return;
 
-      const currentSource = edge.data?.sourceCardinality === 'M' ? 'M' : '1';
-      const newSource = currentSource === '1' ? 'M' : '1';
-      const targetCard = edge.data?.targetCardinality ?? '1';
-
-      setNodes((nds) =>
-        nds.map((node) => {
-          if (node.id !== edge.source) return node;
-          const data = node.data as TableNodeData;
-          const updatedAttributes = (data.attributes || []).map((attr) => {
-            if (attr.id !== edge.sourceHandle || !attr.relation) return attr;
-
-            let cardinality = 'ONE_TO_ONE';
-            if (newSource === '1' && targetCard === '1') cardinality = 'ONE_TO_ONE';
-            else if (newSource === '1' && targetCard === 'M') cardinality = 'ONE_TO_MANY';
-            else if (newSource === 'M' && targetCard === '1') cardinality = 'MANY_TO_ONE';
-            else if (newSource === 'M' && targetCard === 'M') cardinality = 'MANY_TO_MANY';
-
-            return {
-              ...attr,
-              relation: {
-                ...attr.relation,
-                cardinality: cardinality as any,
-              },
-            };
-          });
-          return {
-            ...node,
-            data: {
-              ...data,
-              attributes: updatedAttributes,
-            },
-          };
-        })
-      );
-    },
-    [edges, setNodes]
-  );
-
-  const toggleTargetCardinality = useCallback(
-    (edgeId: string) => {
-      const edge = edges.find((e) => e.id === edgeId);
-      if (!edge || !edge.source || !edge.sourceHandle) return;
-
-      const currentTarget = edge.data?.targetCardinality === 'M' ? 'M' : '1';
-      const newTarget = currentTarget === '1' ? 'M' : '1';
       const sourceCard = edge.data?.sourceCardinality ?? '1';
+      const targetCard = edge.data?.targetCardinality ?? '1';
+      
+      let currentCard: 'ONE_TO_ONE' | 'ONE_TO_MANY' | 'MANY_TO_ONE' | 'MANY_TO_MANY' = 'ONE_TO_ONE';
+      if (sourceCard === '1' && targetCard === '1') currentCard = 'ONE_TO_ONE';
+      else if (sourceCard === '1' && targetCard === 'M') currentCard = 'ONE_TO_MANY';
+      else if (sourceCard === 'M' && targetCard === '1') currentCard = 'MANY_TO_ONE';
+      else if (sourceCard === 'M' && targetCard === 'M') currentCard = 'MANY_TO_MANY';
+
+      let nextCard: 'ONE_TO_ONE' | 'ONE_TO_MANY' | 'MANY_TO_ONE' | 'MANY_TO_MANY' = 'ONE_TO_ONE';
+      if (currentCard === 'ONE_TO_ONE') nextCard = 'ONE_TO_MANY';
+      else if (currentCard === 'ONE_TO_MANY') nextCard = 'MANY_TO_ONE';
+      else if (currentCard === 'MANY_TO_ONE') nextCard = 'MANY_TO_MANY';
+      else if (currentCard === 'MANY_TO_MANY') nextCard = 'ONE_TO_ONE';
 
       setNodes((nds) =>
         nds.map((node) => {
-          if (node.id !== edge.source) return node;
+          if (node.type !== 'tableNode') return node;
           const data = node.data as TableNodeData;
           const updatedAttributes = (data.attributes || []).map((attr) => {
-            if (attr.id !== edge.sourceHandle || !attr.relation) return attr;
+            if (!attr.relations || attr.relations.length === 0) return attr;
 
-            let cardinality = 'ONE_TO_ONE';
-            if (sourceCard === '1' && newTarget === '1') cardinality = 'ONE_TO_ONE';
-            else if (sourceCard === '1' && newTarget === 'M') cardinality = 'ONE_TO_MANY';
-            else if (sourceCard === 'M' && newTarget === '1') cardinality = 'MANY_TO_ONE';
-            else if (sourceCard === 'M' && newTarget === 'M') cardinality = 'MANY_TO_MANY';
+            const updatedRelations = attr.relations.map((r) => {
+              if (r.id !== edgeId) return r;
+              return {
+                ...r,
+                cardinality: nextCard,
+              };
+            });
 
             return {
               ...attr,
-              relation: {
-                ...attr.relation,
-                cardinality: cardinality as any,
-              },
+              relations: updatedRelations,
             };
           });
           return {
@@ -156,7 +206,7 @@ function Flow() {
 
   // Sync React Flow edges state with relationships defined inside nodes data
   useEffect(() => {
-    const newEdges = reconstructEdgesFromNodes(nodes, toggleSourceCardinality, toggleTargetCardinality);
+    const newEdges = reconstructEdgesFromNodes(nodes, toggleCardinality);
 
     const newStr = JSON.stringify(
       newEdges.map((e) => ({
@@ -184,7 +234,7 @@ function Flow() {
     if (newStr !== currentStr) {
       setEdges(newEdges);
     }
-  }, [nodes, edges, setEdges, toggleSourceCardinality, toggleTargetCardinality]);
+  }, [nodes, edges, setEdges, toggleCardinality]);
 
   const onConnect = useCallback(
     (params: Connection) => {
@@ -197,35 +247,75 @@ function Flow() {
         return;
       }
 
+      const relationId = `rel-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
       setNodes((nds) =>
         nds.map((node) => {
-          if (node.id !== params.source) return node;
-          const data = node.data as TableNodeData;
-          const updatedAttributes = (data.attributes || []).map((attr) => {
-            if (attr.id !== params.sourceHandle) return attr;
+          if (node.id === params.source) {
+            const data = node.data as TableNodeData;
+            const updatedAttributes = (data.attributes || []).map((attr) => {
+              if (attr.id !== params.sourceHandle) return attr;
 
-            const constraints = attr.constraints || [];
-            const newConstraints = constraints.includes('FOREIGN_KEY')
-              ? constraints
-              : [...constraints, 'FOREIGN_KEY'];
+              const constraints = attr.constraints || [];
+              const newConstraints = constraints.includes('FOREIGN_KEY')
+                ? constraints
+                : [...constraints, 'FOREIGN_KEY'];
 
+              const relations = attr.relations || [];
+              return {
+                ...attr,
+                constraints: newConstraints,
+                relations: [
+                  ...relations,
+                  {
+                    id: relationId,
+                    role: 'SOURCE' as const,
+                    tableId: params.target || '',
+                    attributeId: params.targetHandle || '',
+                    cardinality: 'ONE_TO_ONE' as const,
+                  },
+                ],
+              };
+            });
             return {
-              ...attr,
-              constraints: newConstraints,
-              relation: {
-                tableId: params.target || '',
-                attributeId: params.targetHandle || '',
-                cardinality: 'ONE_TO_ONE',
+              ...node,
+              data: {
+                ...data,
+                attributes: updatedAttributes,
               },
             };
-          });
-          return {
-            ...node,
-            data: {
-              ...data,
-              attributes: updatedAttributes,
-            },
-          };
+          }
+
+          if (node.id === params.target) {
+            const data = node.data as TableNodeData;
+            const updatedAttributes = (data.attributes || []).map((attr) => {
+              if (attr.id !== params.targetHandle) return attr;
+
+              const relations = attr.relations || [];
+              return {
+                ...attr,
+                relations: [
+                  ...relations,
+                  {
+                    id: relationId,
+                    role: 'TARGET' as const,
+                    tableId: params.source || '',
+                    attributeId: params.sourceHandle || '',
+                    cardinality: 'ONE_TO_ONE' as const,
+                  },
+                ],
+              };
+            });
+            return {
+              ...node,
+              data: {
+                ...data,
+                attributes: updatedAttributes,
+              },
+            };
+          }
+
+          return node;
         })
       );
     },
@@ -241,22 +331,26 @@ function Flow() {
             if (node.type !== 'tableNode') return node;
             const data = node.data as TableNodeData;
             const updatedAttributes = (data.attributes || []).map((attr) => {
-              if (!attr.relation) return attr;
+              if (!attr.relations || attr.relations.length === 0) return attr;
 
-              const isMatchingEdgeDeleted = removeChanges.some((c) => {
-                const edge = edges.find((e) => e.id === c.id);
-                return edge && edge.source === node.id && edge.sourceHandle === attr.id;
-              });
+              const isSourceRelationDeleted = attr.relations.some(
+                (r) => r.role === 'SOURCE' && removeChanges.some((c) => c.id === r.id)
+              );
+              
+              const remainingRelations = attr.relations.filter(
+                (r) => !removeChanges.some((c) => c.id === r.id)
+              );
 
-              if (isMatchingEdgeDeleted) {
-                const newConstraints = (attr.constraints || []).filter((con) => con !== 'FOREIGN_KEY');
-                const { relation, ...rest } = attr;
-                return {
-                  ...rest,
-                  constraints: newConstraints,
-                };
+              let newConstraints = attr.constraints || [];
+              if (isSourceRelationDeleted) {
+                newConstraints = newConstraints.filter((con) => con !== 'FOREIGN_KEY');
               }
-              return attr;
+
+              return {
+                ...attr,
+                constraints: newConstraints,
+                relations: remainingRelations.length > 0 ? remainingRelations : undefined,
+              };
             });
             return {
               ...node,
@@ -270,7 +364,7 @@ function Flow() {
       }
       onEdgesChange(changes);
     },
-    [edges, onEdgesChange, setNodes]
+    [onEdgesChange, setNodes]
   );
 
   const mapToExportFormat = useCallback((nodesList: Node[]) => {
@@ -289,8 +383,8 @@ function Flow() {
               datatype: attr.datatype,
               constraints: attr.constraints || [],
             };
-            if (attr.relation) {
-              cleanAttr.relation = attr.relation;
+            if (attr.relations && attr.relations.length > 0) {
+              cleanAttr.relations = attr.relations;
             }
             return cleanAttr;
           }),
