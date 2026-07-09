@@ -11,7 +11,7 @@ function useNodeInsertion() {
       type: 'tableNode',
       data: { 
         label: `Table ${id.slice(-4)}`,
-        fields: []
+        attributes: []
       },
       position: { x:0, y: 0 },
     };
