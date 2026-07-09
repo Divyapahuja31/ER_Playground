@@ -1,11 +1,18 @@
 import React, { useState } from 'react';
 import { type NodeProps, type Node, Handle, Position, useReactFlow } from '@xyflow/react';
 
+export type Relation = {
+  tableId: string;
+  attributeId: string;
+  cardinality: 'ONE_TO_ONE' | 'ONE_TO_MANY' | 'MANY_TO_ONE' | 'MANY_TO_MANY';
+};
+
 export type Attribute = {
   id: string;
   name: string;
   datatype: string;
   constraints: string[];
+  relation?: Relation;
 };
 
 export type TableNodeData = {
@@ -44,8 +51,23 @@ const getConstraintIcons = (constraints: string[]) => {
 };
 
 const TableNode = ({ id, data }: TableNodeProps) => {
-  const { updateNodeData } = useReactFlow();
+  const { getNodes, updateNodeData } = useReactFlow();
   const attributes = data.attributes || [];
+
+  const resolveRelationDetails = (relation: Relation) => {
+    const allNodes = getNodes();
+    const targetNode = allNodes.find(n => n.id === relation.tableId);
+    if (!targetNode) return null;
+    
+    const targetData = targetNode.data as TableNodeData;
+    const targetAttr = (targetData.attributes || []).find(a => a.id === relation.attributeId);
+    if (!targetAttr) return null;
+    
+    return {
+      tableName: targetData.label || '',
+      attributeName: targetAttr.name || ''
+    };
+  };
 
   // Hover Card States
   const [hoveredAttrId, setHoveredAttrId] = useState<string | null>(null);
@@ -61,6 +83,11 @@ const TableNode = ({ id, data }: TableNodeProps) => {
   const [tempName, setTempName] = useState('');
   const [tempDatatype, setTempDatatype] = useState('VARCHAR');
   const [tempConstraints, setTempConstraints] = useState<string[]>([]);
+  
+  // Relation form states
+  const [tempRelationTableId, setTempRelationTableId] = useState('');
+  const [tempRelationAttributeId, setTempRelationAttributeId] = useState('');
+  const [tempRelationCardinality, setTempRelationCardinality] = useState<'ONE_TO_ONE' | 'ONE_TO_MANY' | 'MANY_TO_ONE' | 'MANY_TO_MANY'>('ONE_TO_ONE');
 
   // Hover handlers with 250ms delay
   const handleHeaderMouseEnter = () => {
@@ -107,19 +134,31 @@ const TableNode = ({ id, data }: TableNodeProps) => {
     setTempName(`field_${attributes.length + 1}`);
     setTempDatatype('VARCHAR');
     setTempConstraints([]);
+    setTempRelationTableId('');
+    setTempRelationAttributeId('');
+    setTempRelationCardinality('ONE_TO_ONE');
     setIsAddingAttr(true);
     setIsHeaderHovered(false);
   };
 
   const saveNewAttribute = () => {
     const newId = `attr-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const relation = tempConstraints.includes('FOREIGN_KEY') && tempRelationTableId && tempRelationAttributeId
+      ? {
+          tableId: tempRelationTableId,
+          attributeId: tempRelationAttributeId,
+          cardinality: tempRelationCardinality
+        }
+      : undefined;
+
     const newAttributes: Attribute[] = [
       ...attributes,
       {
         id: newId,
         name: tempName,
         datatype: tempDatatype,
-        constraints: tempConstraints
+        constraints: tempConstraints,
+        relation
       }
     ];
     updateNodeData(id, { attributes: newAttributes });
@@ -131,18 +170,36 @@ const TableNode = ({ id, data }: TableNodeProps) => {
     setTempName(attr.name);
     setTempDatatype(attr.datatype);
     setTempConstraints(attr.constraints || []);
+    if (attr.relation) {
+      setTempRelationTableId(attr.relation.tableId);
+      setTempRelationAttributeId(attr.relation.attributeId);
+      setTempRelationCardinality(attr.relation.cardinality);
+    } else {
+      setTempRelationTableId('');
+      setTempRelationAttributeId('');
+      setTempRelationCardinality('ONE_TO_ONE');
+    }
     setEditingAttrIndex(index);
     setHoveredAttrId(null);
   };
 
   const saveEditedAttribute = () => {
     if (editingAttrIndex === null) return;
+    const relation = tempConstraints.includes('FOREIGN_KEY') && tempRelationTableId && tempRelationAttributeId
+      ? {
+          tableId: tempRelationTableId,
+          attributeId: tempRelationAttributeId,
+          cardinality: tempRelationCardinality
+        }
+      : undefined;
+
     const newAttributes = [...attributes];
     newAttributes[editingAttrIndex] = {
       ...newAttributes[editingAttrIndex],
       name: tempName,
       datatype: tempDatatype,
-      constraints: tempConstraints
+      constraints: tempConstraints,
+      relation
     };
     updateNodeData(id, { attributes: newAttributes });
     setEditingAttrIndex(null);
@@ -158,8 +215,23 @@ const TableNode = ({ id, data }: TableNodeProps) => {
   const toggleConstraint = (value: string) => {
     if (tempConstraints.includes(value)) {
       setTempConstraints(tempConstraints.filter((c) => c !== value));
+      if (value === 'FOREIGN_KEY') {
+        setTempRelationTableId('');
+        setTempRelationAttributeId('');
+      }
     } else {
       setTempConstraints([...tempConstraints, value]);
+      if (value === 'FOREIGN_KEY') {
+        const allNodes = getNodes();
+        const otherTables = allNodes.filter((n) => n.id !== id && n.type === 'tableNode') as Node<TableNodeData>[];
+        if (otherTables.length > 0 && !tempRelationTableId) {
+          setTempRelationTableId(otherTables[0].id);
+          const otherAttrs = otherTables[0].data.attributes || [];
+          if (otherAttrs.length > 0) {
+            setTempRelationAttributeId(otherAttrs[0].id);
+          }
+        }
+      }
     }
   };
 
@@ -221,28 +293,55 @@ const TableNode = ({ id, data }: TableNodeProps) => {
 
               {/* Middle Hoverable Content Area */}
               <div
-                className="flex justify-between items-center py-1 px-2 hover:bg-zinc-900/40 rounded transition-colors cursor-pointer w-full"
+                className="flex flex-col py-1.5 px-2 hover:bg-zinc-900/40 rounded transition-colors cursor-pointer w-full"
                 onMouseEnter={() => handleAttrMouseEnter(attr.id)}
                 onMouseLeave={handleAttrMouseLeave}
               >
-                {/* Left Side: Constraints Icons + Attribute Name */}
-                <div className="flex items-center gap-1.5 text-zinc-100 truncate pr-2 select-text pointer-events-none">
-                  {attr.constraints && attr.constraints.length > 0 && (
-                    <span className="flex items-center gap-1 select-none mr-0.5">
-                      {getConstraintIcons(attr.constraints).map((icon, idx) => (
-                        <span key={idx} className="text-[10px] tracking-tight font-semibold text-zinc-400">
-                          {icon}
-                        </span>
-                      ))}
-                    </span>
-                  )}
-                  <span className="truncate text-[11px]">{attr.name}</span>
+                <div className="flex justify-between items-center w-full">
+                  {/* Left Side: Constraints Icons + Attribute Name */}
+                  <div className="flex items-center gap-1.5 text-zinc-100 truncate pr-2 select-text pointer-events-none">
+                    {attr.constraints && attr.constraints.length > 0 && (
+                      <span className="flex items-center gap-1 select-none mr-0.5">
+                        {getConstraintIcons(attr.constraints).map((icon, idx) => (
+                          <span key={idx} className="text-[10px] tracking-tight font-semibold text-zinc-400">
+                            {icon}
+                          </span>
+                        ))}
+                      </span>
+                    )}
+                    <span className="truncate text-[11px] font-semibold">{attr.name}</span>
+                  </div>
+
+                  {/* Right Side: Datatype */}
+                  <div className="text-[9px] font-mono text-zinc-400 shrink-0 select-none pl-2 pointer-events-none">
+                    {attr.datatype}
+                  </div>
                 </div>
 
-                {/* Right Side: Datatype */}
-                <div className="text-[9px] font-mono text-zinc-400 shrink-0 select-none pl-2 pointer-events-none">
-                  {attr.datatype}
-                </div>
+                {/* Relationship info below the attribute (if any) */}
+                {attr.relation && (
+                  (() => {
+                    const resolved = resolveRelationDetails(attr.relation);
+                    if (!resolved) return null;
+                    
+                    let cardLabel = '1 → 1';
+                    if (attr.relation.cardinality === 'ONE_TO_MANY') cardLabel = '1 → M';
+                    else if (attr.relation.cardinality === 'MANY_TO_ONE') cardLabel = 'M → 1';
+                    else if (attr.relation.cardinality === 'MANY_TO_MANY') cardLabel = 'M → M';
+
+                    return (
+                      <div className="text-[9px] text-zinc-500 mt-1 border-t border-zinc-900/40 pt-1 flex flex-col gap-0.5 select-none pointer-events-none">
+                        <div className="flex items-center gap-1">
+                          <span className="text-[10px]">🔗</span>
+                          <span>References <strong className="text-zinc-400 font-medium">{resolved.tableName}.{resolved.attributeName}</strong></span>
+                        </div>
+                        <div className="text-[8px] text-zinc-600 font-semibold uppercase tracking-wider pl-3.5">
+                          Cardinality: {cardLabel}
+                        </div>
+                      </div>
+                    );
+                  })()
+                )}
               </div>
 
               {/* Right Handle (Source) */}
@@ -345,6 +444,72 @@ const TableNode = ({ id, data }: TableNodeProps) => {
                       })}
                     </div>
                   </div>
+
+                  {/* Foreign Key Relation Fields */}
+                  {tempConstraints.includes('FOREIGN_KEY') && (
+                    <div className="flex flex-col gap-2 border-t border-zinc-800/60 pt-2 mt-1 animate-in fade-in slide-in-from-top-1 duration-150">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] text-zinc-400 uppercase tracking-wider">References Table</label>
+                        <select
+                          value={tempRelationTableId}
+                          onChange={(e) => {
+                            const selectedTableId = e.target.value;
+                            setTempRelationTableId(selectedTableId);
+                            const allNodes = getNodes();
+                            const targetTable = allNodes.find(n => n.id === selectedTableId) as Node<TableNodeData> | undefined;
+                            if (targetTable) {
+                              const targetAttrs = targetTable.data.attributes || [];
+                              setTempRelationAttributeId(targetAttrs[0]?.id || '');
+                            } else {
+                              setTempRelationAttributeId('');
+                            }
+                          }}
+                          className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
+                        >
+                          <option value="">Select Table...</option>
+                          {(getNodes()
+                            .filter((n) => n.id !== id && n.type === 'tableNode') as Node<TableNodeData>[])
+                            .map((n) => (
+                              <option key={n.id} value={n.id}>
+                                {n.data.label}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+
+                      {tempRelationTableId && (
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[9px] text-zinc-400 uppercase tracking-wider">References Column</label>
+                          <select
+                            value={tempRelationAttributeId}
+                            onChange={(e) => setTempRelationAttributeId(e.target.value)}
+                            className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
+                          >
+                            <option value="">Select Column...</option>
+                            {((getNodes().find((n) => n.id === tempRelationTableId) as Node<TableNodeData> | undefined)?.data.attributes || []).map((a) => (
+                              <option key={a.id} value={a.id}>
+                                {a.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] text-zinc-400 uppercase tracking-wider">Cardinality</label>
+                        <select
+                          value={tempRelationCardinality}
+                          onChange={(e) => setTempRelationCardinality(e.target.value as any)}
+                          className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
+                        >
+                          <option value="ONE_TO_ONE">One to One (1 → 1)</option>
+                          <option value="ONE_TO_MANY">One to Many (1 → M)</option>
+                          <option value="MANY_TO_ONE">Many to One (M → 1)</option>
+                          <option value="MANY_TO_MANY">Many to Many (M → M)</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="flex justify-between items-center text-[10px] mt-2">
                     <button
@@ -462,6 +627,72 @@ const TableNode = ({ id, data }: TableNodeProps) => {
               })}
             </div>
           </div>
+
+          {/* Foreign Key Relation Fields */}
+          {tempConstraints.includes('FOREIGN_KEY') && (
+            <div className="flex flex-col gap-2 border-t border-zinc-800/60 pt-2 mt-1 animate-in fade-in slide-in-from-top-1 duration-150">
+              <div className="flex flex-col gap-1">
+                <label className="text-[9px] text-zinc-400 uppercase tracking-wider">References Table</label>
+                <select
+                  value={tempRelationTableId}
+                  onChange={(e) => {
+                    const selectedTableId = e.target.value;
+                    setTempRelationTableId(selectedTableId);
+                    const allNodes = getNodes();
+                    const targetTable = allNodes.find(n => n.id === selectedTableId) as Node<TableNodeData> | undefined;
+                    if (targetTable) {
+                      const targetAttrs = targetTable.data.attributes || [];
+                      setTempRelationAttributeId(targetAttrs[0]?.id || '');
+                    } else {
+                      setTempRelationAttributeId('');
+                    }
+                  }}
+                  className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
+                >
+                  <option value="">Select Table...</option>
+                  {(getNodes()
+                    .filter((n) => n.id !== id && n.type === 'tableNode') as Node<TableNodeData>[])
+                    .map((n) => (
+                      <option key={n.id} value={n.id}>
+                        {n.data.label}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              {tempRelationTableId && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-[9px] text-zinc-400 uppercase tracking-wider">References Column</label>
+                  <select
+                    value={tempRelationAttributeId}
+                    onChange={(e) => setTempRelationAttributeId(e.target.value)}
+                    className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
+                  >
+                    <option value="">Select Column...</option>
+                    {((getNodes().find((n) => n.id === tempRelationTableId) as Node<TableNodeData> | undefined)?.data.attributes || []).map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[9px] text-zinc-400 uppercase tracking-wider">Cardinality</label>
+                <select
+                  value={tempRelationCardinality}
+                  onChange={(e) => setTempRelationCardinality(e.target.value as any)}
+                  className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-zinc-500 w-full cursor-pointer"
+                >
+                  <option value="ONE_TO_ONE">One to One (1 → 1)</option>
+                  <option value="ONE_TO_MANY">One to Many (1 → M)</option>
+                  <option value="MANY_TO_ONE">Many to One (M → 1)</option>
+                  <option value="MANY_TO_MANY">Many to Many (M → M)</option>
+                </select>
+              </div>
+            </div>
+          )}
 
           <div className="flex justify-end gap-1.5 text-[10px] mt-2">
             <button
