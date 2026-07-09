@@ -4,7 +4,7 @@ import '@xyflow/react/dist/style.css';
 
 import Sidebar from './sidebar';
 import useDrag from '../hooks/useDrag';
-import TableNode from './customNodes/TableNode';
+import TableNode, { type TableNodeData } from './customNodes/TableNode';
 import RelationshipEdge from './CustomEdge/RelationshipEdge';
 
 function Flow() {
@@ -92,8 +92,62 @@ function Flow() {
     [setEdges, toggleSourceCardinality, toggleTargetCardinality]
   );
 
+  const mapToExportFormat = useCallback((nodesList: Node[], edgesList: Edge[]) => {
+    const tables = nodesList
+      .filter((node) => node.type === 'tableNode')
+      .map((node) => {
+        const data = node.data as TableNodeData;
+        const attributes = data.attributes || [];
+        return {
+          id: node.id,
+          name: data.label || '',
+          attributes: attributes.map((attr) => ({
+            id: attr.id,
+            name: attr.name,
+            datatype: attr.datatype,
+            constraints: attr.constraints || [],
+          })),
+        };
+      });
+
+    const relationships = edgesList.map((edge) => {
+      const sourceCardinality = edge.data?.sourceCardinality ?? '1';
+      const targetCardinality = edge.data?.targetCardinality ?? '1';
+
+      let cardinality = 'ONE_TO_ONE';
+      if (sourceCardinality === '1' && targetCardinality === '1') {
+        cardinality = 'ONE_TO_ONE';
+      } else if (sourceCardinality === '1' && targetCardinality === 'M') {
+        cardinality = 'ONE_TO_MANY';
+      } else if (sourceCardinality === 'M' && targetCardinality === '1') {
+        cardinality = 'MANY_TO_ONE';
+      } else if (sourceCardinality === 'M' && targetCardinality === 'M') {
+        cardinality = 'MANY_TO_MANY';
+      }
+
+      return {
+        id: edge.id,
+        source: {
+          table: edge.source,
+          attribute: edge.sourceHandle || '',
+        },
+        target: {
+          table: edge.target,
+          attribute: edge.targetHandle || '',
+        },
+        cardinality,
+      };
+    });
+
+    return {
+      tables,
+      relationships,
+    };
+  }, []);
+
   const exportJson = () => {
-    const json = JSON.stringify({ nodes, edges }, null, 2);
+    const cleanData = mapToExportFormat(nodes, edges);
+    const json = JSON.stringify(cleanData, null, 2);
     console.log(json);
     alert('check console for json');
   };
